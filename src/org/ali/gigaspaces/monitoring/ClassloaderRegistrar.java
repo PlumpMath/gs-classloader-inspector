@@ -4,8 +4,11 @@ import java.lang.instrument.ClassFileTransformer;
 import java.lang.instrument.IllegalClassFormatException;
 import java.lang.ref.WeakReference;
 import java.lang.reflect.Field;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
 import java.net.URL;
 import java.net.URLClassLoader;
+import java.rmi.RemoteException;
 import java.security.ProtectionDomain;
 import java.util.*;
 import java.util.logging.Logger;
@@ -19,6 +22,12 @@ public class ClassloaderRegistrar implements ClassFileTransformer, ClassloaderRe
     private static final Logger logger = Logger.getLogger("ClassloaderRegistrar");
 
     private static final String INDENT = "  ";
+
+    public static final String CLASSLOADER_GIGASPACES_REMOTE = "com.gigaspaces.lrmi.classloading.LRMIClassLoader";
+    public static final String CLASSLOADER_JINI_COMMON = "org.jini.rio.boot.CommonClassLoader";
+    public static final String CLASSLOADER_JINI_SERVICE = "org.jini.rio.boot.ServiceClassLoader";
+    public static final String CLASSLOADER_REFLECTION1 = "sun.reflect.DelegatingClassLoader";
+    public static final String CLASSLOADER_REFLECTION2 = "sun.reflect.misc.MethodUtil";
 
     private Map<ClassLoader, ClassLoader> registeredClassloaders = new WeakHashMap<ClassLoader, ClassLoader>();
 
@@ -34,7 +43,12 @@ public class ClassloaderRegistrar implements ClassFileTransformer, ClassloaderRe
 
     @Override
     public String showTree() {
-        return buildTree().logContent();
+        return buildTree().logContent(false);
+    }
+
+    @Override
+    public String showTreeWithRemotePing() {
+        return buildTree().logContent(true);
     }
 
     @Override
@@ -49,16 +63,16 @@ public class ClassloaderRegistrar implements ClassFileTransformer, ClassloaderRe
             b.append("URLs:\n");
             appendUrls(((URLClassLoader) cl).getURLs(), b, INDENT);
         }
-        if (cl.getClass().getName().equals("org.jini.rio.boot.ServiceClassLoader")) {
+        if (cl.getClass().getName().equals(CLASSLOADER_JINI_SERVICE)) {
             b.append("Service name:").append(getPrivateFieldOrNull(cl, "name")).append("\n");
             b.append("Search path:\n");
             appendUrls((URL[]) getPrivateFieldOrNull(cl, "searchPath"), b, INDENT);
             b.append("Lib path:\n");
             appendUrls((URL[]) getPrivateFieldOrNull(cl, "libPath"), b, INDENT);
-        } else if (cl.getClass().getName().equals("com.gigaspaces.lrmi.classloading.LRMIClassLoader")) {
+        } else if (cl.getClass().getName().equals(CLASSLOADER_GIGASPACES_REMOTE)) {
             b.append("Context classes:\n");
             appendClassListWithClassloaders(cl, b);
-        } else if (cl.getClass().getName().equals("org.jini.rio.boot.CommonClassLoader")) {
+        } else if (cl.getClass().getName().equals(CLASSLOADER_JINI_COMMON)) {
             b.append("Codebases:\n");
             appendUrlsList((List<URL>) getPrivateFieldOrNull(cl, "codebaseComponents"), b, INDENT);
             b.append("Components:\n");
@@ -93,8 +107,10 @@ public class ClassloaderRegistrar implements ClassFileTransformer, ClassloaderRe
             Object classloaderContext = getPrivateField(classLoader, "_serviceClassLoaderContext");
             Map<String, WeakReference<? extends ClassLoader>> classes = getPrivateField(classloaderContext, "_classLoaderByName");
             for(Map.Entry<String,WeakReference<? extends ClassLoader>> entry : classes.entrySet()) {
-                b.append(INDENT).append(entry.getKey()).append(":")
-                        .append(System.identityHashCode(entry.getValue().get())).append("\n");
+                if (classLoader==entry.getValue().get()) {
+                    b.append(INDENT).append(entry.getKey()).append(":")
+                            .append(System.identityHashCode(entry.getValue().get())).append("\n");
+                }
             }
         } catch (Exception ex) {
             logger.log(Level.SEVERE, "Failed to read lrmi context classes", ex);
@@ -111,7 +127,7 @@ public class ClassloaderRegistrar implements ClassFileTransformer, ClassloaderRe
         return null;
     }
 
-    private <T> T getPrivateField(Object object, String name) throws Exception {
+    private static <T> T getPrivateField(Object object, String name) throws Exception {
         Field field = object.getClass().getDeclaredField(name);
         field.setAccessible(true);
         return (T)field.get(object);
@@ -144,7 +160,7 @@ public class ClassloaderRegistrar implements ClassFileTransformer, ClassloaderRe
         void addHierarchy(ClassLoader classLoader) {
             // filter out reflection class loaders
             String name = classLoader.getClass().getName();
-            if (name.equals("sun.reflect.DelegatingClassLoader") || name.equals("sun.reflect.misc.MethodUtil")) return;
+            if (name.equals(CLASSLOADER_REFLECTION1) || name.equals(CLASSLOADER_REFLECTION2)) return;
             List<ClassLoader> fromParent = new ArrayList<ClassLoader>();
             do {
                 fromParent.add(classLoader);
@@ -168,7 +184,7 @@ public class ClassloaderRegistrar implements ClassFileTransformer, ClassloaderRe
             }
         }
 
-        String logContent() {
+        String logContent(boolean addHealthCheck) {
             List<TreeNode> stack = new ArrayList<TreeNode>(classLoaders.size()/2);
 
             // Initialize bootstrap classloader
@@ -197,8 +213,11 @@ public class ClassloaderRegistrar implements ClassFileTransformer, ClassloaderRe
                     prefix += "| ";
                     builder.append("|-");
                 }
-                builder.append(System.identityHashCode(current.classLoader))
-                        .append(" : ")
+                builder.append(System.identityHashCode(current.classLoader));
+                if (addHealthCheck) {
+                    appendHealthcheck(current.classLoader, builder);
+                }
+                builder.append(" : ")
                         .append(current.classLoader.getClass().getName())
                         .append(" : ")
                         .append(current.classLoader)
@@ -206,6 +225,27 @@ public class ClassloaderRegistrar implements ClassFileTransformer, ClassloaderRe
                 stack.add(current);
             }
             return builder.toString();
+        }
+
+        void appendHealthcheck(ClassLoader classLoader, StringBuilder builder) {
+            if (classLoader.getClass().getName().equals(CLASSLOADER_GIGASPACES_REMOTE)) {
+                try {
+                    Object remoteClassProvider = getPrivateField(classLoader, "_remoteClassProvider");
+                    Object remoteClassLoaderId = getPrivateField(classLoader, "_remoteClassLoaderId");
+                    Method method = remoteClassProvider.getClass().getMethod("getClassDefinition", long.class, String.class);
+                    method.invoke(remoteClassProvider, remoteClassLoaderId, "non.existent.class.Here");
+                } catch (InvocationTargetException e) {
+                    logger.info("Failed to invoke method with exception : " + e.getMessage());
+                    if (e.getTargetException() instanceof RemoteException) {
+                        builder.append(" : [-]");
+                    } else {
+                        builder.append(" : [+]");
+                    }
+                } catch (Exception e) {
+                    logger.severe("Failed to invoke method with exception : " + e.getMessage());
+                    builder.append(" : [?]");
+                }
+            }
         }
 
         ClassLoader getClassloader(int hashCode) {
