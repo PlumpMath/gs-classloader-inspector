@@ -13,7 +13,7 @@ public class Agent {
         inst.addTransformer(registrar);
         try {
             ObjectName on = new ObjectName("system", "type", "ClassloaderRegistrar");
-            ManagementFactory.getPlatformMBeanServer().registerMBean(registrar, on);
+            ManagementFactory.getPlatformMBeanServer().registerMBean(new ClassloaderRegistrarStandardBean(registrar), on);
         } catch (Throwable th) {
             System.err.println("Failed to register classloader tracing agent bean.");
         }
