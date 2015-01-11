@@ -1,5 +1,7 @@
 package org.ali.gigaspaces.monitoring;
 
+import java.io.PrintWriter;
+import java.io.StringWriter;
 import java.lang.instrument.ClassFileTransformer;
 import java.lang.instrument.IllegalClassFormatException;
 import java.lang.ref.WeakReference;
@@ -139,6 +141,45 @@ public class ClassloaderRegistrar implements ClassFileTransformer, ClassloaderRe
             tree.addHierarchy(cl);
         }
         return tree;
+    }
+
+    @Override
+    public String getClassDetails(String name, int classLoaderHashCode) {
+        ClassLoader classLoader = buildTree().getClassloader(classLoaderHashCode);
+        if (classLoader==null) return "ClassLoader not found.";
+        try {
+            Class classToLog = classLoader.loadClass(name);
+            return describeClass(classToLog);
+        } catch (ClassNotFoundException e) {
+            StringWriter writer = new StringWriter();
+            PrintWriter printer = new PrintWriter(writer);
+            e.printStackTrace(printer);
+            printer.close();
+            return writer.toString();
+        }
+    }
+
+    private String describeClass(Class classToDescribe) {
+        String description = "";
+        while (classToDescribe!=null) {
+            description += getClassDesc(classToDescribe) + "\n";
+            classToDescribe = classToDescribe.getSuperclass();
+        }
+        return description;
+    }
+
+    private String getClassDesc(Class classToDescribe) {
+        return classToDescribe.getName() + "@" + System.identityHashCode(classToDescribe) +
+                "\n  classloader:        " + objectDescription(classToDescribe.getClassLoader()) +
+                "\n  parent classloader: " + (classToDescribe.getClassLoader()==null?
+                         "":
+                         objectDescription(classToDescribe.getClassLoader().getParent()));
+    }
+
+    private String objectDescription(Object object) {
+        return object==null?
+                "null":
+                (object.getClass().getName() + "@" + System.identityHashCode(object));
     }
 
     private static class TreeNode {

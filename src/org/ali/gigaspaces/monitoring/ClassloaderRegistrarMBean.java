@@ -11,4 +11,6 @@ public interface ClassloaderRegistrarMBean {
     // get url's from classloader of choice
     // cl is searched using hashcode
     String showClassloaderDetails(int classLoaderHashCode);
+    // instantiate class and get classloader details
+    String getClassDetails(String name, int classLoaderHashCode);
 }

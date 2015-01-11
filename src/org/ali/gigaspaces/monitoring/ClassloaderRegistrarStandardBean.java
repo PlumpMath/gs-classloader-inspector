@@ -18,6 +18,10 @@ public class ClassloaderRegistrarStandardBean extends StandardMBean {
         ops.put("showClassloaderDetails",
                 new String[]{"Get detailed info about classloader. Depending on type classes or paths would be shown.",
                         "classloaderHashcode","Classloader object hashCode as returned by showTree"});
+        ops.put("getClassDetails",
+                new String[]{"Attempt to obtain a class by name using selected classloader. Either a class hierarchy with defining classloaders is shown, or an exception stacktrace.",
+                        "name", "Class name",
+                        "classLoaderHashCode","Classloader object hashCode as returned by showTree"});
     }
 
     public ClassloaderRegistrarStandardBean(ClassloaderRegistrar registrar) throws NotCompliantMBeanException {
